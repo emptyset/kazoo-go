@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -89,9 +91,29 @@ func NewKazooFromConnectionString(connectionString string, conf *Config) (*Kazoo
 // Brokers returns a map of all the brokers that make part of the
 // Kafka cluster that is registered in Zookeeper.
 func (kz *Kazoo) Brokers() (map[int32]string, error) {
+	kz.conn.SetLogger(log.New(os.Stdout, "", log.LstdFlags|log.Lshortfile))
 	root := fmt.Sprintf("%s/brokers/ids", kz.conf.Chroot)
-	children, _, err := kz.conn.Children(root)
+
+	// total timeout of 30sec
+	retries := 10
+	wait := time.Duration(1)
+
+	children := []string{}
+	var err error
+	for try := 1; try <= retries; try++ {
+		log.Printf("attempt %d at invoking kz.conn.Children(%s)", try, root)
+		children, _, err = kz.conn.Children(root)
+		if err != nil {
+			log.Printf("error when invoking kz.conn.Children(%s) at try %d: %s\n", root, try, err.Error())
+			time.Sleep(time.Second * wait)
+		} else {
+			break
+		}
+	}
+
+	// finally return the error when the tries have been exhausted
 	if err != nil {
+		log.Printf("error when after all attempts to call kz.conn.Children(%s) : %s\n", root, err.Error())
 		return nil, err
 	}
 
@@ -104,16 +126,19 @@ func (kz *Kazoo) Brokers() (map[int32]string, error) {
 	for _, child := range children {
 		brokerID, err := strconv.ParseInt(child, 10, 32)
 		if err != nil {
+			log.Printf("error when invoking strconv.ParseInt(): %s\n", err.Error())
 			return nil, err
 		}
 
 		value, _, err := kz.conn.Get(path.Join(root, child))
 		if err != nil {
+			log.Printf("error when invoking kz.conn.Get(): %s\n", err.Error())
 			return nil, err
 		}
 
 		var brokerNode brokerEntry
 		if err := json.Unmarshal(value, &brokerNode); err != nil {
+			log.Printf("error when invoking json.Unmarshal(): %s\n", err.Error())
 			return nil, err
 		}
 
@@ -128,6 +153,7 @@ func (kz *Kazoo) Brokers() (map[int32]string, error) {
 func (kz *Kazoo) BrokerList() ([]string, error) {
 	brokers, err := kz.Brokers()
 	if err != nil {
+		log.Printf("error when invoking kz.Brokers(): %s\n", err.Error())
 		return nil, err
 	}
 
@@ -136,6 +162,7 @@ func (kz *Kazoo) BrokerList() ([]string, error) {
 		result = append(result, broker)
 	}
 
+	log.Printf("result: %+v\n", result)
 	return result, nil
 }
 
